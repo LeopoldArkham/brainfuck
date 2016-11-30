@@ -2,6 +2,7 @@ use std::io::Error;
 use std::io::prelude::*;
 use std::io;
 use std::fs::File;
+use std::collections::HashMap;
 
 fn open_file(name: &str, s: &mut String) -> Result<usize, Box<Error>> {
     let mut f = File::open(name)?;
@@ -9,7 +10,7 @@ fn open_file(name: &str, s: &mut String) -> Result<usize, Box<Error>> {
     Ok(r)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 enum Instruction {
     Forwards,
     Backwards,
@@ -64,20 +65,35 @@ fn output(cell: &u8) {
     print!("{}", *cell as char);
 }
 
+fn parse(source: &str) -> (Vec<Instruction>, HashMap<usize, usize>) {
+	let mut instructions: Vec<Instruction> = Vec::with_capacity(source.len());
+	let mut loop_map = HashMap::new();
+	let mut idx_stack = Vec::new();
+
+    for chr in source.chars() {
+        if let Some(ins) = parse_to_instruction(&chr) {
+            instructions.push(ins);
+            if ins == Instruction::LoopStart {
+            	idx_stack.push(instructions.len() - 1);
+            } else if ins == Instruction::LoopEnd {
+            	let start = idx_stack.pop().unwrap();
+            	let end = instructions.len() - 1;
+            	loop_map.insert(start, end);
+            	loop_map.insert(end, start);
+            }
+        }
+    }
+    (instructions, loop_map)
+}
+
 fn main() {
-    let mut program = String::new();
-    match open_file("mandelbrot.bf", &mut program) {
+    let mut source = String::new();
+    match open_file("mandelbrot.bf", &mut source) {
         Ok(_) => {}
         Err(e) => println!("Error opening file: {}", e),
     }
 
-    let mut instructions: Vec<Instruction> = Vec::with_capacity(program.len());
-
-    for chr in program.chars() {
-        if let Some(ins) = parse_to_instruction(&chr) {
-            instructions.push(ins);
-        }
-    }
+    let(instructions, loop_map) = parse(&source);
 
     let mut i_ptr: usize = 0;
     let mut d_ptr: usize = 0;
@@ -94,28 +110,12 @@ fn main() {
             Output => output(&data[d_ptr]),
             LoopStart => {
                 if data[d_ptr] == 0 {
-                    let mut open_loops = 1;
-                    while open_loops != 0 {
-                        i_ptr += 1;
-                        match instructions[i_ptr] {
-                            LoopStart => open_loops += 1,
-                            LoopEnd => open_loops -= 1,
-                            _ => {}
-                        }
-                    }
+                    i_ptr = loop_map[&i_ptr];
                 }
             }
             LoopEnd => {
                 if data[d_ptr] != 0 {
-                    let mut open_loops = 1;
-                    while open_loops != 0 {
-                        i_ptr -= 1;
-                        match instructions[i_ptr] {
-                            LoopEnd => open_loops += 1,
-                            LoopStart => open_loops -= 1,
-                            _ => {}
-                        }
-                    }
+                	i_ptr = loop_map[&i_ptr];
                 }
             }
         }
