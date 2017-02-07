@@ -2,7 +2,6 @@ use std::io::Error;
 use std::io::prelude::*;
 use std::io;
 use std::fs::File;
-use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 enum Instruction {
@@ -10,10 +9,31 @@ enum Instruction {
     Backwards(usize),
     Increment(u8),
     Decrement(u8),
+    LoopStart(usize),
+    LoopEnd(usize),
     Output,
     Input,
-    LoopStart,
-    LoopEnd,
+    Skip,
+}
+
+impl Instruction {
+    fn from_sym_rep(sym: char, rep: usize) -> Instruction {
+        use Instruction::*;
+        match sym {
+            '<' => Backwards(rep),
+            '>' => Forwards(rep),
+            '+' => Increment(rep as u8),
+            '-' => Decrement(rep as u8),
+            _ => unreachable!(),
+        }
+    }
+
+    fn is_start(&self) -> bool {
+        match *self {
+            Instruction::LoopStart(_) => true,
+            _ => false,
+        }
+    }
 }
 
 fn open_file(name: &str, s: &mut String) -> Result<usize, Box<Error>> {
@@ -22,97 +42,86 @@ fn open_file(name: &str, s: &mut String) -> Result<usize, Box<Error>> {
     Ok(r)
 }
 
+#[inline(always)]
 fn forwards(ptr: &mut usize, rep: usize) {
     *ptr += rep;
 }
 
+#[inline(always)]
 fn backwards(ptr: &mut usize, rep: usize) {
     *ptr -= rep;
 }
 
+#[inline(always)]
 fn increment(cell: &mut u8, rep: u8) {
-    *cell += rep;
+    *cell = cell.wrapping_add(rep);
 }
 
+#[inline(always)]
 fn decrement(cell: &mut u8, rep: u8) {
-    *cell -= rep;
+    *cell = cell.wrapping_sub(rep);
 }
 
+#[inline(always)]
 fn input(cell: &mut u8) {
     *cell = io::stdin()
         .bytes()
         .next()
         .and_then(|res| res.ok())
-        .expect("Failed to read a byte");
+        .expect("Failed to read a byte. Time to change careers.");
 }
 
 fn output(cell: &u8) {
     print!("{}", *cell as char);
 }
 
-fn parse(src: &str) -> (Vec<Instruction>, HashMap<usize, usize>) {
-    use Instruction::*;
-
-    let source = src.chars().collect::<Vec<_>>();
-    let mut instructions: Vec<Instruction> = Vec::with_capacity(source.len());
-    let mut loop_map = HashMap::new();
-    let mut idx_stack = Vec::new();
-    let mut idx: usize = 0;
-
-    while idx != source.len() {
-        let cur = source[idx];
-
-        let ins = match cur {
-            '>' | '<' | '+' | '-' => {
-                let mut local_idx = idx + 1;
-                while source[local_idx] == cur {
-                    local_idx += 1;
-                }
-                let t = match cur {
-                    '>' => {
-                        let i = local_idx - idx;
-                        Some(Forwards(i))
-                    }
-                    '<' => {
-                        let i = local_idx - idx;
-                        Some(Backwards(i))
-                    }
-                    '+' => {
-                        let i = local_idx - idx;
-                        Some(Increment((i) as u8))
-                    }
-                    '-' => {
-                        let i = local_idx - idx;
-                        Some(Decrement((i) as u8))
-                    }
-                    _ => None,
-                };
-                idx = local_idx - 1;
-                t
-            }
-            '.' => Some(Output),
-            ',' => Some(Input),
-            '[' => Some(LoopStart),
-            ']' => Some(LoopEnd),
-            _ => None,
-        };
-
-        if let Some(instruction) = ins {
-            instructions.push(instruction);
-        }
-
-        if ins == Some(LoopStart) {
-            idx_stack.push(instructions.len() - 1);
-        } else if ins == Some(LoopEnd) {
-            let start = idx_stack.pop().unwrap();
-            let end = instructions.len() - 1;
-            loop_map.insert(start, end);
-            loop_map.insert(end, start);
-        }
+fn reduce_similar(tape: &[char]) -> usize {
+    let mut idx = 1;
+    while tape[idx] == tape[0] {
         idx += 1;
     }
-    (instructions, loop_map)
+    idx
 }
+
+fn parse(src: &str) -> Vec<Instruction> {
+    use Instruction::*;
+
+    let tape = src.chars().collect::<Vec<char>>();
+    let mut instructions: Vec<Instruction> = Vec::with_capacity(src.len());
+    let mut idx: usize = 0;
+    let mut open_loops = Vec::new();
+
+    // TODO: Catch-all should skip invalid instruction
+    while idx != src.len() {
+        let ins = match tape[idx] {
+            s @ '<' | s @ '>' | s @ '+' | s @ '-' => {
+                let rep = reduce_similar(&tape[idx..]);
+                idx += rep;
+                idx -= 1;
+                Instruction::from_sym_rep(s, rep)
+            }
+            '[' => {
+                open_loops.push(instructions.len());
+                LoopStart(0)
+            }
+            ']' => {
+                let matching_brace = open_loops.pop().unwrap();
+                // assert!(instructions[matching_brace].is_start());
+                instructions[matching_brace] = LoopStart(instructions.len());
+                LoopEnd(matching_brace)
+            }
+            '.' => Output,
+            ',' => Input,
+            _ => Skip,
+        };
+        idx += 1;
+        instructions.push(ins);
+        // println!("idx: {} {:?}", instructions.len(), open_loops);
+        // println!("{:?}", instructions);
+    }
+    instructions
+}
+
 
 fn main() {
     let mut source = String::new();
@@ -121,12 +130,15 @@ fn main() {
         Err(e) => println!("Error opening file: {}", e),
     }
 
-    let (instructions, loop_map) = parse(&source);
+    let instructions = parse(&source);
+    // println!("{:?}", instructions);
 
     let mut i_ptr: usize = 0;
     let mut d_ptr: usize = 0;
     let mut data = [0u8; 30_000];
 
+
+    // TODO: Get rid of Skip variant
     while i_ptr != instructions.len() {
         use Instruction::*;
         match instructions[i_ptr] {
@@ -134,18 +146,19 @@ fn main() {
             Backwards(rep) => backwards(&mut d_ptr, rep),
             Increment(rep) => increment(&mut data[d_ptr], rep),
             Decrement(rep) => decrement(&mut data[d_ptr], rep),
+            LoopStart(matching) => {
+                if data[d_ptr] == 0 {
+                    i_ptr = matching;
+                }
+            }
+            LoopEnd(matching) => {
+                if data[d_ptr] != 0 {
+                    i_ptr = matching;
+                }
+            }
             Input => input(&mut data[d_ptr]),
             Output => output(&data[d_ptr]),
-            LoopStart => {
-                if data[d_ptr] == 0 {
-                    i_ptr = loop_map[&i_ptr];
-                }
-            }
-            LoopEnd => {
-                if data[d_ptr] != 0 {
-                    i_ptr = loop_map[&i_ptr];
-                }
-            }
+            Skip => {}          
         }
         i_ptr += 1;
     }
